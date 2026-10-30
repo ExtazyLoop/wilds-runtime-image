@@ -1,0 +1,15 @@
+Prepared: 2026-10-30
+Target registry account: ExtazyLoop
+Target architecture: linux/amd64
+
+Python smoke script syntax: validated locally with Python 3.14.5.
+Docker image build: NOT RUN (no Docker/Podman engine or WSL installed).
+Linux smoke test: NOT RUN locally; included in Dockerfile and GitHub workflow.
+Startup metadata comparison: NOT RUN locally; included in GitHub workflow.
+GitHub repository creation: NOT PERFORMED.
+Registry publication: NOT PERFORMED.
+Live game/EOS/existing native plugin compatibility: NOT TESTED.
+
+The advertised GHCR image name is a planned output, not an existing verified image.
+Run the supplied workflow in your own repository and inspect its result before
+changing the production game server's Docker image.
