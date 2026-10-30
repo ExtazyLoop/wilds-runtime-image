@@ -1,0 +1,97 @@
+name: Build Wilds SteamCMD Python image
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish to GHCR after successful checks
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BASE_IMAGE: ghcr.io/ptero-eggs/steamcmd:debian
+      PYTHON_IMAGE: python:3.13-slim-bookworm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve upstream image digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "$BASE_IMAGE"
+          docker pull --platform linux/amd64 "$PYTHON_IMAGE"
+          base_ref="$(docker image inspect "$BASE_IMAGE" --format '{{index .RepoDigests 0}}')"
+          python_ref="$(docker image inspect "$PYTHON_IMAGE" --format '{{index .RepoDigests 0}}')"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/wilds-steamcmd-python"
+          printf 'BASE_REF=%s\nPYTHON_REF=%s\nIMAGE=%s\n' "$base_ref" "$python_ref" "$image" >> "$GITHUB_ENV"
+          printf 'Base: %s\nPython: %s\n' "$base_ref" "$python_ref" > build-evidence.txt
+
+      - name: Build game runtime image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 \
+            --build-arg STEAMCMD_IMAGE="$BASE_REF" \
+            --build-arg PYTHON_IMAGE="$PYTHON_REF" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --tag "$IMAGE:build-$GITHUB_RUN_NUMBER" .
+
+      - name: Verify Python and preserved startup metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint python3 "$IMAGE:build-$GITHUB_RUN_NUMBER" \
+            /opt/wilds-runtime/smoke.py | tee -a build-evidence.txt
+          docker image inspect "$BASE_IMAGE" > /tmp/wilds-base.json
+          docker image inspect "$IMAGE:build-$GITHUB_RUN_NUMBER" > /tmp/wilds-built.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          base = json.loads(Path('/tmp/wilds-base.json').read_text())[0]['Config']
+          built = json.loads(Path('/tmp/wilds-built.json').read_text())[0]['Config']
+          keys = ('Entrypoint', 'Cmd', 'WorkingDir', 'User', 'StopSignal')
+          differences = {key: [base.get(key), built.get(key)] for key in keys if base.get(key) != built.get(key)}
+          if differences:
+              raise SystemExit(f'Unexpected startup metadata changes: {differences}')
+          with open('build-evidence.txt', 'a') as output:
+              output.write('Preserved startup metadata: ' + ', '.join(keys) + '\n')
+          PY
+
+      - name: Publish verified build
+        if: ${{ inputs.publish }}
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE:build-$GITHUB_RUN_NUMBER"
+          docker tag "$IMAGE:build-$GITHUB_RUN_NUMBER" "$IMAGE:python3.13"
+          docker push "$IMAGE:python3.13"
+          docker logout ghcr.io
+          printf 'Published: %s:build-%s\n' "$IMAGE" "$GITHUB_RUN_NUMBER" >> build-evidence.txt
+
+      - name: Save build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wilds-image-build-evidence
+          path: build-evidence.txt
+          if-no-files-found: warn
+
+      - name: Show next step
+        shell: bash
+        run: |
+          printf '### Wilds runtime image\n\n' >> "$GITHUB_STEP_SUMMARY"
+          cat build-evidence.txt >> "$GITHUB_STEP_SUMMARY"
+          printf '\nGame/EOS/plugin compatibility still requires staging.\n' >> "$GITHUB_STEP_SUMMARY"
